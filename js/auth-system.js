@@ -1,12 +1,11 @@
 (function () {
   'use strict';
 
-  // ── 配置 ──────────────────────────────────────────────
   const API  = 'https://kspzaxywgpkuhvqqsfyq.supabase.co/functions/v1/miniphone-api';
   const TAG  = 'yuan330';
   const KEY  = 'ephone_auth';
   const ACCT = 'ephone_auth_account';
-  const DID  = 'ephone_device_id';   // 登录时存入，心跳直接读取
+  const DID  = 'ephone_device_id';
 
   // ── DOM ───────────────────────────────────────────────
   const $intro = document.getElementById('intro-screen');
@@ -20,7 +19,7 @@
 
   // ── 动态注入激活码输入框 ──────────────────────────────
   const $code = document.createElement('input');
-  $code.type        = 'text';
+  $code.type = 'text';
   $code.placeholder = 'Activation Code (XXXX-XXXX-XXXX)';
   $code.autocomplete = 'off';
   $code.style.display = 'none';
@@ -42,7 +41,7 @@
     $err.textContent = '';
   });
 
-  // ── 设备指纹（登录时计算并缓存到 localStorage）────────
+  // ── 设备指纹（计算并缓存）────────────────────────────
   async function getDeviceId() {
     const cached = localStorage.getItem(DID);
     if (cached) return cached;
@@ -72,49 +71,42 @@
 
   // ── 核弹级清理并强制登出 ──────────────────────────────
   function forceLogout(reason) {
-    // 1. 立即黑屏
     document.body.innerHTML = `
       <div style="background:#0a0a0a;color:#fff;height:100vh;
         display:flex;flex-direction:column;align-items:center;
         justify-content:center;gap:12px;font-family:monospace;">
         <div style="font-size:22px;letter-spacing:4px;">DISCONNECTED</div>
-        <div style="font-size:13px;color:#888;">${reason || 'Your session has ended'}</div>
+        <div style="font-size:13px;color:#888;">${reason || 'Session ended'}</div>
       </div>`;
 
-    // 2. 清空常规缓存
     localStorage.clear();
     sessionStorage.clear();
 
-    // 3. 清空 IndexedDB（聊天记录、图片等）
-    const tryDelete = (name) => { try { indexedDB.deleteDatabase(name); } catch (_) {} };
+    const tryDel = name => { try { indexedDB.deleteDatabase(name); } catch (_) {} };
     if (window.indexedDB) {
       if (indexedDB.databases) {
         indexedDB.databases()
-          .then(dbs => dbs.forEach(db => tryDelete(db.name)))
-          .catch(() => {
-            // 降级：删已知数据库
-            ['GeminiChatDB', 'EPhoneDB', 'ephone_db'].forEach(tryDelete);
-          });
+          .then(dbs => dbs.forEach(db => tryDel(db.name)))
+          .catch(() => ['GeminiChatDB', 'EPhoneDB', 'ephone_db'].forEach(tryDel));
       } else {
-        ['GeminiChatDB', 'EPhoneDB', 'ephone_db'].forEach(tryDelete);
+        ['GeminiChatDB', 'EPhoneDB', 'ephone_db'].forEach(tryDel);
       }
     }
 
-    // 4. 带时间戳跳转，防止缓存
     setTimeout(() => {
-      window.location.replace(
-        window.location.pathname + '?_t=' + Date.now()
-      );
+      window.location.replace(window.location.pathname + '?_t=' + Date.now());
     }, 600);
   }
 
   // ── 心跳检测 ──────────────────────────────────────────
+  // ★ 修复：deviceId 不依赖缓存是否存在，总是能拿到
   async function checkHeartbeat() {
-    const account  = localStorage.getItem(ACCT);
-    const deviceId = localStorage.getItem(DID);
-    if (!account || !deviceId) return;
+    const account = localStorage.getItem(ACCT);
+    if (!account) return;
 
     try {
+      // getDeviceId() 内部有缓存，拿不到就现算，不会再 return 了
+      const deviceId = await getDeviceId();
       const data = await callApi('check_status', { account, deviceId });
       if (!data.success) {
         const reason = data.message === 'kicked_banned'
@@ -122,34 +114,34 @@
           : 'Device unbound by admin';
         forceLogout(reason);
       }
-    } catch (_) {}   // 网络异常不处理，下次再试
+    } catch (_) {}
   }
 
   function startHeartbeat() {
     // 每5分钟定时检测
     setInterval(checkHeartbeat, 5 * 60 * 1000);
 
-    // 切回前台时立即检测（手机切换 App 再回来）
+    // 切回前台立即检测（手机切 App 再回来）
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') checkHeartbeat();
     });
 
-    // 从缓存恢复页面时检测（iOS Safari 特有）
-    window.addEventListener('pageshow', (e) => {
+    // iOS Safari 缓存恢复时检测
+    window.addEventListener('pageshow', e => {
       if (e.persisted) checkHeartbeat();
     });
 
-    // 2秒后先检测一次（防止登录状态已被后台修改）
-    setTimeout(checkHeartbeat, 2000);
+    // 进入主界面 3 秒后立刻查一次
+    setTimeout(checkHeartbeat, 3000);
   }
 
-  // ── 登录 / 激活提交 ───────────────────────────────────
+  // ── 登录 / 激活 ───────────────────────────────────────
   async function handleSubmit() {
     const account  = $acct.value.trim();
     const password = $pwd.value.trim();
     $err.textContent = '';
 
-    if (!account || !password)          { setErr('Please enter account and password'); return; }
+    if (!account || !password)             { setErr('Please enter account and password'); return; }
     if (isActivate && !$code.value.trim()) { setErr('Please enter activation code'); return; }
 
     $btn.disabled    = true;
@@ -158,11 +150,8 @@
     try {
       const deviceId = await getDeviceId();
       const data = isActivate
-        ? await callApi('activate', {
-            code: $code.value.trim().toUpperCase(),
-            account, password, deviceId
-          })
-        : await callApi('login', { account, password, deviceId });
+        ? await callApi('activate', { code: $code.value.trim().toUpperCase(), account, password, deviceId })
+        : await callApi('login',    { account, password, deviceId });
 
       if (data.success) {
         localStorage.setItem(KEY, 'true');
@@ -212,9 +201,7 @@
   $acct.addEventListener('keypress', e => { if (e.key === 'Enter') $pwd.focus(); });
   $code.addEventListener('keypress', e => { if (e.key === 'Enter') $acct.focus(); });
 
-  window.ephoneLogout = function () {
-    forceLogout('Logged out');
-  };
+  window.ephoneLogout = () => forceLogout('Logged out');
 
   init();
   console.log('Auth · yuan330');
